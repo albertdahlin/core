@@ -1,4 +1,5 @@
 /*
+import Result exposing (Ok, Err)
 
 */
 
@@ -6,12 +7,9 @@ var inboxes = new WeakMap();
 var resolvers = new WeakMap();
 
 
-//var _IO_return = Promise.resolve;
-function _IO_return(v) {
-    return Promise.resolve(v);
-}
-var _IO_fail = Promise.reject;
-var _IO_print = console.log
+function _IO_return(v) { return Promise.resolve(v); }
+function _IO_fail(e) { return Promise.reject(e); }
+function _IO_print(m) { console.log(m); return null; }
 
 function _IO_sleep(t) {
     return new Promise(resolve => setTimeout(resolve, t));
@@ -27,7 +25,10 @@ var _IO_recover = F2(function(fn, io)
     return io.catch(fn);
 });
 
-function _IO_spawn(fn) {
+var _IO_spawn = spawnLink;
+var _IO_spawnLink = F2(spawnLink);
+
+function spawnLink(fn, linkTo) {
     var inbox = {
         key: {}
     };
@@ -35,6 +36,11 @@ function _IO_spawn(fn) {
     resolvers.set(inbox.key, []);
     var wrapIo = function() {
         var io = fn(inbox);
+
+        if (linkTo) {
+            io = io.then(ok => A2(_IO_send, $elm$core$Result$Ok(ok), linkTo))
+              .catch(err => A2(_IO_send, $elm$core$Result$Err(err), linkTo))
+        }
         io.finally(x => {
             inboxes.delete(inbox.key);
             resolvers.delete(inbox.key);
@@ -46,26 +52,6 @@ function _IO_spawn(fn) {
 
     return Promise.resolve(inbox);
 }
-
-var _IO_spawnLink = F2(function(fn, linkTo) {
-    var inbox = {
-        key: {}
-    };
-    inboxes.set(inbox.key, []);
-    resolvers.set(inbox.key, []);
-    var wrapIo = function() {
-        var io = fn(inbox);
-        io.finally(x => {
-            inboxes.delete(inbox.key);
-            resolvers.delete(inbox.key);
-        });
-
-        return io;
-    }
-    setTimeout(wrapIo, 0, inbox);
-
-    return Promise.resolve(inbox);
-});
 
 function _IO_recv(inbox) {
     var msg = inboxes.get(inbox.key).shift();
