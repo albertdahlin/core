@@ -7,7 +7,7 @@ module IO exposing
     , spawn
     , send, receive
     , addressOf, createInbox
-    , sendTo, call
+    , sendTo, call, spawnLink
     , StateMachine, spawnStateMachine
     )
 
@@ -65,7 +65,7 @@ The actor model is characterized by inherent concurrency of computation within a
 
 ## Convenient Stuff
 
-@docs sendTo, call
+@docs sendTo, call, spawnLink
 @docs StateMachine, spawnStateMachine
 
 -}
@@ -73,6 +73,7 @@ The actor model is characterized by inherent concurrency of computation within a
 import Basics exposing (..)
 import Elm.Kernel.IO
 import Platform
+import Result exposing (Result)
 import String exposing (String)
 
 
@@ -149,6 +150,15 @@ program =
 spawn : (Inbox msg -> IO err ()) -> IO x (Address msg)
 spawn =
     Elm.Kernel.IO.spawn
+
+
+{-| -}
+spawnLink :
+    (Inbox msg -> IO err ok)
+    -> Address (Result err ok)
+    -> IO x (Address msg)
+spawnLink =
+    Elm.Kernel.IO.spawnLink
 
 
 {-| -}
