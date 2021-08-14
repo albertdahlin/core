@@ -6,7 +6,6 @@ import Result exposing (Ok, Err, isOk, isErr)
 var inboxes = new WeakMap();
 var resolvers = new WeakMap();
 
-
 function _IO_return(v) { return Promise.resolve(v); }
 function _IO_fail(e) { return Promise.reject(e); }
 function _IO_print(m) { console.log(m); return _IO_return(0); }
@@ -29,8 +28,7 @@ function _IO_exit(status) {
     process.exit(status);
 }
 
-var _IO_spawn = spawnLink;
-var _IO_spawnLink = F2(spawnLink);
+var _IO_spawn = F2(spawnLink);
 
 function spawnLink(fn, linkTo) {
     var inbox = {
@@ -39,7 +37,7 @@ function spawnLink(fn, linkTo) {
     inboxes.set(inbox.key, []);
     resolvers.set(inbox.key, []);
     var wrapIo = function() {
-        var io = fn(inbox);
+        var io = Promise.resolve(inbox).then(fn);
 
         io = io
             .then(ok => A2(_IO_send, __Result_Ok(ok), linkTo))
@@ -125,9 +123,7 @@ var _IO_logOnError = {
 };
 
 var _IO_program = F4(function(impl, flagDecoder, debugMetadata, args) {
-
-    impl(process)
-        .catch(err => console.error('ERROR', err));
+    spawnLink(impl, _IO_exitOnError);
 });
 
 function _Platform_export(p) {

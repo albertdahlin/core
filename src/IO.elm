@@ -1,11 +1,16 @@
 module IO exposing
-    ( IO, return, fail
-    , map, andThen, recover
-    , print, sleep, exit, program
+    ( IO
+    , succeed, fail, none
+    , map, map2, map3, map4, andMap, mapError
+    , andThen, recover
+    , batch, combine
+    , (|.), (|=)
+    , print, sleep, exit
     , Address, send
     , Inbox, receive
     , Process
     , spawn
+    , program
     , exitOnError, logOnError
     , addressOf, createInbox
     , sendTo, call, deferTo
@@ -16,25 +21,39 @@ module IO exposing
 {-|
 
 
-# IO Primitives
+# Input / Output Primitives
+
+An I/O value encapsulates an operation that
+can either succeed of fail. Maybe you are familiar
+with the [Promise](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise) class in javascript? This is the same idea.
+
+@docs IO
 
 
-## Create I/O
+## Create I/O values
 
-@docs IO, return, fail
+@docs succeed, fail, none
 
 
-## Transform and Compose I/O
+## Transform I/O values
 
-@docs map, andThen, recover
+@docs map, map2, map3, map4, andMap, mapError
+
+
+## Compose I/O values
+
+@docs andThen, recover
+
+@docs batch, combine
+@docs (|.), (|=)
 
 
 ## Common Operations
 
-@docs print, sleep, exit, program
+@docs print, sleep, exit
 
 
-# Concurrent IO
+# Concurrent I/O
 
 This module uses the [Actor Model](https://en.wikipedia.org/wiki/Actor_model) to model concurrency.
 
@@ -57,11 +76,15 @@ or if the address is for an actor it has itself created.
 
 ## Send messages
 
+A _Process_ is an _Actor_ that has been started (more on this below).
+
 To send a message to a _Process_ you need its _Address_.
 As you can see below, the _Address_ type has a variable (msg).
 This will garantee that you only send messages to the Process that it will be able to understand.
 
 @docs Address, send
+
+Sending a message is a non-blocking operations.
 
 
 ## Receive a message
@@ -77,29 +100,29 @@ Each Process gets their own _Inbox_ (more on that below) when they are started.
 
 A Process is an Actor that has been started (spawned).
 
-To start an Actor we need two things:
-
-  - An _Actor_ (obviously).
-  - An _Address_ where we can send the Result if the process terminates.
-
 A process is simply a function that takes an _Inbox_ as argument and returns I/O.
 
 @docs Process
 
+Let's create a simple process
+
+    logger : Inbox String -> IO x ()
+    logger inbox =
+        receive inbox
+            |> andThen print
+            |> andThen (\_ -> logger inbox)
+
 As you can see on the _IO_ type above, it has two parameters: `err` and `ok`.
 This means that a _Process_ can exit in two ways:
-Normally, or with failure. When that happens the result will be sent
-to the address that you provieded.
+Normally, or with failure
+
+When that happens we should take care of this value somehow, right?
+That's why you have to provide an address to which this result will be sent.
 
 @docs spawn
 
 After starting the actor you will get the Address to the inbox of the process
 so you can send messages to it.
-
-To make things simpler, this module provies two standard addresses
-that you can use when spawning processes:
-
-@docs exitOnError, logOnError
 
 Here is a simple example of an actor:
 
@@ -121,9 +144,47 @@ Here is a simple example of an actor:
                 )
             |> andThen (\_ -> speaker inbox)
 
+This process will loop forever and:
+
+1.  Wait for a message
+2.  Print the message
+3.  Repeat from 1
+
+
+## Create a Program (main)
+
+Now we can create a Program and use our actor.
+
+@docs program
+
+    helloWorld : Inbox () -> IO String ()
+    helloWorld _ =
+        spawn speaker exitOnError
+            |> andThen
+                (\speakerAddress ->
+                    [ send (Say "Hello") speakerAddress
+                    , send (Yell "World") speakerAddress
+                    ]
+                        |> batch
+                )
+
+    main : Program () () ()
+    main =
+        program helloWorld
+
+If you look at the type signature of the `helloWorld` program
+it might look familiar? It is also an Actor, right?
+
+This is all the basics of concurrency in the actor model.
+What follows is just convenience.
+
 
 ## Convenient Stuff
 
+To make things simpler, this module provies two standard addresses
+that you can use when spawning processes:
+
+@docs exitOnError, logOnError
 @docs addressOf, createInbox
 
 @docs sendTo, call, deferTo
@@ -142,9 +203,14 @@ Here is a simple example of an actor:
 
 import Basics exposing (..)
 import Elm.Kernel.IO
+import List exposing ((::))
 import Platform
 import Result exposing (Result(..))
 import String exposing (String)
+
+
+infix left  0 (|.) = ignorer
+infix left  0 (|=) = keeper
 
 
 {-| -}
@@ -163,8 +229,17 @@ type Address msg
 
 
 {-| -}
-return : a -> IO x a
-return =
+type alias Process msg err ok =
+    Inbox msg -> IO err ok
+
+
+
+-- NATIVE KERNEL
+
+
+{-| -}
+succeed : a -> IO x a
+succeed =
     Elm.Kernel.IO.return
 
 
@@ -212,18 +287,9 @@ exit =
 
 
 {-| -}
-program : (() -> IO String ()) -> Platform.Program () () ()
+program : (Inbox msg -> IO String ()) -> Platform.Program () () msg
 program =
     Elm.Kernel.IO.program
-
-
-
--- ACTOR
-
-
-{-| -}
-type alias Process msg err ok =
-    Inbox msg -> IO err ok
 
 
 {-| -}
@@ -232,7 +298,7 @@ spawn :
     -> Address (Result err ok)
     -> IO x (Address msg)
 spawn =
-    Elm.Kernel.IO.spawnLink
+    Elm.Kernel.IO.spawn
 
 
 {-| -}
@@ -278,6 +344,107 @@ addressOf =
     Elm.Kernel.IO.addressOf
 
 
+{-| Exits the program if an `Err` is received. The String will
+be printed to `STDERR`.
+-}
+exitOnError : Address (Result String a)
+exitOnError =
+    Elm.Kernel.IO.exitOnError
+
+
+{-| Print errors to `STDERR`.
+-}
+logOnError : Address (Result String a)
+logOnError =
+    Elm.Kernel.IO.logOnError
+
+
+
+-- PURE STUFF
+
+
+{-| -}
+none : IO x ()
+none =
+    succeed ()
+
+
+{-| -}
+andMap : IO x a -> IO x (a -> b) -> IO x b
+andMap ioa =
+    andThen (\fn -> map (\a -> fn a) ioa)
+
+
+{-| -}
+map2 : (a -> b -> c) -> IO x a -> IO x b -> IO x c
+map2 fn a b =
+    succeed fn
+        |> andMap a
+        |> andMap b
+
+
+{-| -}
+map3 : (a -> b -> c -> d) -> IO x a -> IO x b -> IO x c -> IO x d
+map3 fn a b c =
+    succeed fn
+        |> andMap a
+        |> andMap b
+        |> andMap c
+
+
+{-| -}
+map4 : (a -> b -> c -> d -> e) -> IO x a -> IO x b -> IO x c -> IO x d -> IO x e
+map4 fn a b c d =
+    succeed fn
+        |> andMap a
+        |> andMap b
+        |> andMap c
+        |> andMap d
+
+
+{-| -}
+mapError : (x -> y) -> IO x ok -> IO y ok
+mapError fn =
+    recover (\x -> fail (fn x))
+
+
+{-| -}
+batch : List (IO x ()) -> IO x ()
+batch =
+    List.foldl
+        (\io -> andThen (\_ -> io))
+        (succeed ())
+
+
+{-| Keep the value from the row.
+
+    example : IO x Int
+    example =
+        print "Hello"
+            |= succeed 1
+            |. print "World"
+
+-}
+keeper : IO x ignore -> IO x keep -> IO x keep
+keeper ignore keep =
+    map2 always keep ignore
+
+
+{-| Keep the value from the row above.
+
+    example : IO x Int
+    example =
+        succeed 1
+            |. print "Hello"
+            |. print "World"
+
+-}
+ignorer : IO x keep -> IO x ignore -> IO x keep
+ignorer keep ignore =
+    ignore
+        |> andThen (\_ -> keep)
+
+
 {-| Pipe-friendly version of send
 
     message
@@ -287,6 +454,17 @@ addressOf =
 sendTo : Address msg -> msg -> IO err ()
 sendTo addr msg =
     send msg addr
+
+
+{-| -}
+combine : List (IO err ok) -> IO err (List ok)
+combine =
+    List.foldl
+        (\io ->
+            andThen (\list -> map (\ok -> ok :: list) io)
+        )
+        (succeed [])
+        >> map List.reverse
 
 
 {-| Send a message and then wait for the reply.
@@ -333,24 +511,6 @@ deferTo addr io =
 
 
 -- ADRESSES
-
-
-{-| Exits the program if an `Err` is received. The String will
-be printed to `STDERR`.
--}
-exitOnError : Address (Result String a)
-exitOnError =
-    Elm.Kernel.IO.exitOnError
-
-
-{-| Print errors to `STDERR`.
--}
-logOnError : Address (Result String a)
-logOnError =
-    Elm.Kernel.IO.logOnError
-
-
-
 -- STATE MACHINE
 
 
@@ -372,7 +532,7 @@ logOnError =
 
     init : Int -> ( Model, IO x () )
     init arg =
-        ( arg, return () )
+        ( arg, succeed () )
 
 
     update : Msg -> Model -> ( Model, IO x () )
@@ -380,7 +540,7 @@ logOnError =
         case msg of
             Increment ->
                 ( model + 1
-                , return ()
+                , succeed ()
                 )
 
             SendValueTo replyTo
