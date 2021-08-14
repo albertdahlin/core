@@ -1,28 +1,26 @@
 /*
 import Result exposing (Ok, Err, isOk, isErr)
+import IO exposing (succeed)
 
 */
 
 var inboxes = new WeakMap();
 var resolvers = new WeakMap();
+var lastKey = 0
 
-function _IO_return(v) { return Promise.resolve(v); }
-function _IO_fail(e) { return Promise.reject(e); }
-function _IO_print(m) { console.log(m); return _IO_return(0); }
+function _IO_print(m) {
+    return function(cont) {
+        console.log(m);
+        cont(__Result_Ok(0));
+    }
+ }
 
 function _IO_sleep(t) {
-    return new Promise(resolve => setTimeout(resolve, t));
+    return function(cont) {
+        setTimeout(cont, t, __Result_Ok(0));
+    }
 }
 
-var _IO_andThen = F2(function(fn, io)
-{
-    return io.then(fn);
-});
-
-var _IO_recover = F2(function(fn, io)
-{
-    return io.catch(fn);
-});
 
 function _IO_exit(status) {
     process.exit(status);
@@ -30,38 +28,41 @@ function _IO_exit(status) {
 
 var _IO_spawn = F2(spawnLink);
 
-function spawnLink(fn, linkTo) {
+function spawnLink(actor, linkTo) {
     var inbox = {
-        key: {}
+        key: {},
+        id: lastKey++
     };
     inboxes.set(inbox.key, []);
     resolvers.set(inbox.key, []);
-    var wrapIo = function() {
-        var io = Promise.resolve(inbox).then(fn);
 
-        io = io
-            .then(ok => A2(_IO_send, __Result_Ok(ok), linkTo))
-            .catch(err => A2(_IO_send, __Result_Err(err), linkTo))
-            .finally(x => {
-                inboxes.delete(inbox.key);
-                resolvers.delete(inbox.key);
-        });
+    setTimeout(function() {
+        actor(inbox)(function(res) { A2(_IO_send, res, linkTo) })
+    }, 0);
 
-        return io;
-    }
-    setTimeout(wrapIo, 0, inbox);
-
-    return Promise.resolve(inbox);
+    return __IO_succeed(inbox);
 }
+
+function _IO_async(io) {
+    return function(cont) {
+        setTimeout(cont, 0, io)
+    }
+}
+
+function _IO_await(io) {
+}
+
 
 function _IO_recv(inbox) {
     var msg = inboxes.get(inbox.key).shift();
 
     if (msg) {
-        return Promise.resolve(msg);
+        return __IO_succeed(msg);
     } else {
         var r = resolvers.get(inbox.key)
-        return new Promise(resolve => r.push(resolve));
+        return function(cont) {
+            r.push(cont);
+        }
     }
 }
 
@@ -75,7 +76,7 @@ var _IO_send = F2(function(msg, address) {
     var resolve = resolver && resolver.shift();
 
     if (resolve) {
-        resolve(tagger(msg));
+        resolve(__Result_Ok(tagger(msg)));
     } else {
         var inbox = inboxes.get(address.key);
 
@@ -84,21 +85,23 @@ var _IO_send = F2(function(msg, address) {
         }
     }
 
-    return Promise.resolve(0);
+    return __IO_succeed(0);
 });
 
-function _IO_createInbox(a) {
+function _IO_createInbox() {
     var inbox = {
-        key: {}
+        key: {},
+        id: lastKey++
     };
     inboxes.set(inbox.key, []);
     resolvers.set(inbox.key, []);
 
-    return Promise.resolve(inbox);
+    return __IO_succeed(inbox);
 }
 
 var _IO_addressOf = F2(function(tagger, inbox) {
     return {
+        id: inbox.id,
         key: inbox.key,
         tagger: tagger
     }
@@ -108,7 +111,7 @@ var _IO_addressOf = F2(function(tagger, inbox) {
 var _IO_exitOnError = {
     handler: function(msg) {
         if (!__Result_isOk(msg)) {
-            console.error(msg.a);
+            console.error('error', msg.a);
             _IO_exit(-1);
         }
     }
@@ -118,7 +121,7 @@ var _IO_logOnError = {
         if (!__Result_isOk(msg)) {
             console.error(msg.a);
         }
-        return _IO_return(0);
+        return __IO_succeed(0);
     }
 };
 

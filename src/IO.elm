@@ -3,7 +3,7 @@ module IO exposing
     , succeed, fail, none
     , map, map2, map3, map4, andMap, mapError
     , andThen, recover
-    , batch, combine
+    , batch, sequence, concurrent
     , (|.), (|=)
     , print, sleep, exit
     , Address, send
@@ -44,7 +44,7 @@ with the [Promise](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Refer
 
 @docs andThen, recover
 
-@docs batch, combine
+@docs batch, sequence, concurrent
 @docs (|.), (|=)
 
 
@@ -202,11 +202,15 @@ that you can use when spawning processes:
 -}
 
 import Basics exposing (..)
+import Dict exposing (Dict)
 import Elm.Kernel.IO
+import Internal.Cont as C
+import Internal.ContWithResult as Cont exposing (Cont)
 import List exposing ((::))
 import Platform
 import Result exposing (Result(..))
 import String exposing (String)
+import Tuple
 
 
 infix left  0 (|.) = ignorer
@@ -214,8 +218,8 @@ infix left  0 (|=) = keeper
 
 
 {-| -}
-type IO err ok
-    = IO
+type alias IO err ok =
+    Cont () err ok
 
 
 {-| -}
@@ -235,37 +239,6 @@ type alias Process msg err ok =
 
 
 -- NATIVE KERNEL
-
-
-{-| -}
-succeed : a -> IO x a
-succeed =
-    Elm.Kernel.IO.return
-
-
-{-| -}
-fail : err -> IO err a
-fail =
-    Elm.Kernel.IO.fail
-
-
-{-| -}
-map : (a -> b) -> IO x a -> IO x b
-map =
-    -- This is not a misstake, it explits how Promis.then works.
-    Elm.Kernel.IO.andThen
-
-
-{-| -}
-andThen : (a -> IO x b) -> IO x a -> IO x b
-andThen =
-    Elm.Kernel.IO.andThen
-
-
-{-| -}
-recover : (err -> IO x ok) -> IO err ok -> IO x ok
-recover =
-    Elm.Kernel.IO.recover
 
 
 {-| -}
@@ -311,6 +284,12 @@ receive =
 send : msg -> Address msg -> IO x ()
 send =
     Elm.Kernel.IO.send
+
+
+{-| -}
+type Async err ok
+    = Async
+
 
 
 {-| -}
@@ -361,6 +340,36 @@ logOnError =
 
 
 -- PURE STUFF
+
+
+{-| -}
+succeed : a -> IO x a
+succeed =
+    Cont.return
+
+
+{-| -}
+fail : err -> IO err a
+fail =
+    Cont.fail
+
+
+{-| -}
+map : (a -> b) -> IO x a -> IO x b
+map =
+    Cont.map
+
+
+{-| -}
+andThen : (a -> IO x b) -> IO x a -> IO x b
+andThen =
+    Cont.andThen
+
+
+{-| -}
+recover : (err -> IO x ok) -> IO err ok -> IO x ok
+recover =
+    Cont.recover
 
 
 {-| -}
@@ -421,13 +430,13 @@ batch =
     example : IO x Int
     example =
         print "Hello"
-            |= succeed 1
+            |= jucceed 1
             |. print "World"
 
 -}
 keeper : IO x ignore -> IO x keep -> IO x keep
 keeper ignore keep =
-    map2 always keep ignore
+    andThen (\_ -> keep) ignore
 
 
 {-| Keep the value from the row above.
@@ -441,8 +450,7 @@ keeper ignore keep =
 -}
 ignorer : IO x keep -> IO x ignore -> IO x keep
 ignorer keep ignore =
-    ignore
-        |> andThen (\_ -> keep)
+    andThen (\k -> map (\_ -> k) ignore) keep
 
 
 {-| Pipe-friendly version of send
@@ -456,15 +464,75 @@ sendTo addr msg =
     send msg addr
 
 
-{-| -}
-combine : List (IO err ok) -> IO err (List ok)
-combine =
+{-| Combine a list of IO one after the other.
+-}
+sequence : List (IO err ok) -> IO err (List ok)
+sequence =
     List.foldl
         (\io ->
             andThen (\list -> map (\ok -> ok :: list) io)
         )
         (succeed [])
         >> map List.reverse
+
+
+{-| Combine a list of IO all at the same time.
+-}
+concurrent : List (IO err ok) -> IO err (List ok)
+concurrent list =
+    let
+        length =
+            List.length list
+    in
+    createInbox ()
+        |> andThen
+            (\inbox ->
+                spawn (collect length Dict.empty) (addressOf identity inbox)
+                    |> andThen
+                        (\collectAddr ->
+                            List.indexedMap
+                                (\idx io ->
+                                    map (Tuple.pair idx) io
+                                        |> deferTo collectAddr
+                                )
+                                list
+                                |> batch
+                        )
+                    |> andThen (\_ -> receive inbox)
+                    |> andThen
+                        (\result ->
+                            case result of
+                                Ok results ->
+                                    succeed results
+
+                                Err e ->
+                                    fail e
+                        )
+            )
+
+
+collect : Int -> Dict Int a -> Inbox (Result x ( Int, a )) -> IO x (List a)
+collect max items inbox =
+    receive inbox
+        |> andThen
+            (\result ->
+                case result of
+                    Ok ( key, val ) ->
+                        let
+                            items2 =
+                                Dict.insert key val items
+                        in
+                        if Dict.size items2 >= max then
+                            items2
+                                |> Dict.values
+                                |> succeed
+
+                        else
+                            collect max items2 inbox
+
+                    Err e ->
+                        fail e
+            )
 
 
 {-| Send a message and then wait for the reply.
