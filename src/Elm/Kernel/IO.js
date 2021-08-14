@@ -1,6 +1,6 @@
 /*
 import Result exposing (Ok, Err, isOk, isErr)
-import IO exposing (succeed)
+import IO exposing (succeed, andThen, deferTo, Exit)
 
 */
 
@@ -44,23 +44,28 @@ function spawnLink(actor, linkTo) {
 }
 
 function _IO_async(io) {
-    return function(cont) {
-        setTimeout(cont, 0, io)
-    }
+    var inbox = {
+        key: {},
+        id: lastKey++
+    };
+    inboxes.set(inbox.key, []);
+    resolvers.set(inbox.key, []);
+
+    spawnLink(x => io, inbox);
+
+    return __IO_Exit(inbox);
 }
 
-function _IO_await(io) {
-}
 
 
 function _IO_recv(inbox) {
-    var msg = inboxes.get(inbox.key).shift();
+    return function(cont) {
+        var msg = inboxes.get(inbox.key).shift();
 
-    if (msg) {
-        return __IO_succeed(msg);
-    } else {
-        var r = resolvers.get(inbox.key)
-        return function(cont) {
+        if (msg) {
+            cont(__Result_Ok(msg));
+        } else {
+            var r = resolvers.get(inbox.key)
             r.push(cont);
         }
     }

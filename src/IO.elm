@@ -6,6 +6,7 @@ module IO exposing
     , batch, sequence, concurrent
     , (|.), (|=)
     , print, sleep, exit
+    , Exit, async, await, spawnAsync
     , Address, send
     , Inbox, receive
     , Process
@@ -51,6 +52,11 @@ with the [Promise](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Refer
 ## Common Operations
 
 @docs print, sleep, exit
+
+
+## Async API
+
+@docs Exit, async, await, spawnAsync
 
 
 # Concurrent I/O
@@ -287,9 +293,14 @@ send =
 
 
 {-| -}
-type Async err ok
-    = Async
+type Exit err ok
+    = Exit (Inbox (Result err ok))
 
+
+{-| -}
+async : IO err ok -> Exit err ok
+async =
+    Elm.Kernel.IO.async
 
 
 {-| -}
@@ -379,6 +390,17 @@ none =
 
 
 {-| -}
+fromResult : Result err ok -> IO err ok
+fromResult result =
+    case result of
+        Ok ok ->
+            succeed ok
+
+        Err err ->
+            fail err
+
+
+{-| -}
 andMap : IO x a -> IO x (a -> b) -> IO x b
 andMap ioa =
     andThen (\fn -> map (\a -> fn a) ioa)
@@ -430,7 +452,7 @@ batch =
     example : IO x Int
     example =
         print "Hello"
-            |= jucceed 1
+            |= succeed 1
             |. print "World"
 
 -}
@@ -476,63 +498,47 @@ sequence =
         >> map List.reverse
 
 
-{-| Combine a list of IO all at the same time.
+{-| -}
+await : Exit err ok -> IO err ok
+await (Exit inbox) =
+    receive inbox
+        |> andThen fromResult
+
+
+{-|
+
+    spawnAsync exitOnMsg
+        |> andThen
+            (\( address, exit ) ->
+                send "Hello" address
+                    |= await exit
+                    |> andThen print
+            )
+
+
+    exitOnMsg : Inbox a -> IO x a
+    exitOnMsg inbox =
+        receive inbox
+
 -}
-concurrent : List (IO err ok) -> IO err (List ok)
-concurrent list =
-    let
-        length =
-            List.length list
-    in
+spawnAsync :
+    Process msg err ok
+    -> IO x ( Address msg, Exit err ok )
+spawnAsync actor =
     createInbox ()
         |> andThen
             (\inbox ->
-                spawn (collect length Dict.empty) (addressOf identity inbox)
-                    |> andThen
-                        (\collectAddr ->
-                            List.indexedMap
-                                (\idx io ->
-                                    map (Tuple.pair idx) io
-                                        |> deferTo collectAddr
-                                )
-                                list
-                                |> batch
-                        )
-                    |> andThen (\_ -> receive inbox)
-                    |> andThen
-                        (\result ->
-                            case result of
-                                Ok results ->
-                                    succeed results
-
-                                Err e ->
-                                    fail e
-                        )
+                spawn actor (addressOf identity inbox)
+                    |> map (\addr -> ( addr, Exit inbox ))
             )
 
 
-collect : Int -> Dict Int a -> Inbox (Result x ( Int, a )) -> IO x (List a)
-collect max items inbox =
-    receive inbox
-        |> andThen
-            (\result ->
-                case result of
-                    Ok ( key, val ) ->
-                        let
-                            items2 =
-                                Dict.insert key val items
-                        in
-                        if Dict.size items2 >= max then
-                            items2
-                                |> Dict.values
-                                |> succeed
-
-                        else
-                            collect max items2 inbox
-
-                    Err e ->
-                        fail e
-            )
+{-| Combine a list of IO all at the same time.
+-}
+concurrent : List (IO err ok) -> IO err (List ok)
+concurrent =
+    List.map (async >> await)
+        >> sequence
 
 
 {-| Send a message and then wait for the reply.
