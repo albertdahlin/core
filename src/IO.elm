@@ -1,13 +1,15 @@
 module IO exposing
     ( IO, return, fail
-    , andThen, and, recover
-    , print, sleep
-    , program
-    , Address, Inbox
+    , map, andThen, recover
+    , print, sleep, exit, program
+    , Address, send
+    , Inbox, receive
+    , Process
     , spawn
-    , send, receive
+    , exitOnError, logOnError
     , addressOf, createInbox
-    , sendTo, call, spawnLink
+    , sendTo, call, deferTo
+    , spawnWorker
     , StateMachine, spawnStateMachine
     )
 
@@ -16,56 +18,124 @@ module IO exposing
 
 # IO Primitives
 
+
+## Create I/O
+
 @docs IO, return, fail
-@docs andThen, and, recover
-@docs print, sleep
-@docs program
+
+
+## Transform and Compose I/O
+
+@docs map, andThen, recover
+
+
+## Common Operations
+
+@docs print, sleep, exit, program
 
 
 # Concurrent IO
 
-Concurrent IO using the Actor Model
+This module uses the [Actor Model](https://en.wikipedia.org/wiki/Actor_model) to model concurrency.
 
 
 ## The Basic Stuff
-
-The actor model adopts the philosophy that everything is an actor. This is similar to the everything is an object philosophy used by some object-oriented programming languages.
 
 An actor is a computational entity that, in response to a message it receives, can concurrently:
 
   - send a finite number of messages to other actors;
   - create a finite number of new actors;
-  - designate the behavior to be used for the next message it receives.
+  - designate the behavior to be used for the next message it receives (change its state).
 
 There is no assumed sequence to the above actions and they could be carried out in parallel.
 
-Decoupling the sender from communications sent was a fundamental advance of the actor model enabling asynchronous communication and control structures as patterns of passing messages.
-
-Recipients of messages are identified by address, sometimes called "mailing address". Thus an actor can only communicate with actors whose addresses it has. It can obtain those from a message it receives, or if the address is for an actor it has itself created.
-
-The actor model is characterized by inherent concurrency of computation within and among actors, dynamic creation of actors, inclusion of actor addresses in messages, and interaction only through direct asynchronous message passing with no restriction on message arrival order.
-
-@docs Address, Inbox
+Recipients of messages are identified by address.
+Thus an actor can only communicate with actors whose addresses it has.
+It can obtain those from a message it receives,
+or if the address is for an actor it has itself created.
 
 
-### Spawn a process (Actor)
+## Send messages
+
+To send a message to a _Process_ you need its _Address_.
+As you can see below, the _Address_ type has a variable (msg).
+This will garantee that you only send messages to the Process that it will be able to understand.
+
+@docs Address, send
+
+
+## Receive a message
+
+To receive a message you must have access to the _Inbox_
+where the message is stored.
+Each Process gets their own _Inbox_ (more on that below) when they are started.
+
+@docs Inbox, receive
+
+
+## Start a Process
+
+A Process is an Actor that has been started (spawned).
+
+To start an Actor we need two things:
+
+  - An _Actor_ (obviously).
+  - An _Address_ where we can send the Result if the process terminates.
+
+A process is simply a function that takes an _Inbox_ as argument and returns I/O.
+
+@docs Process
+
+As you can see on the _IO_ type above, it has two parameters: `err` and `ok`.
+This means that a _Process_ can exit in two ways:
+Normally, or with failure. When that happens the result will be sent
+to the address that you provieded.
 
 @docs spawn
 
+After starting the actor you will get the Address to the inbox of the process
+so you can send messages to it.
 
-### Send & Receive messages
+To make things simpler, this module provies two standard addresses
+that you can use when spawning processes:
 
-@docs send, receive
+@docs exitOnError, logOnError
 
+Here is a simple example of an actor:
 
-### Address & Inbox
+    type Msg
+        = Say String
+        | Yell String
 
-@docs addressOf, createInbox
+    speaker : Inbox Msg -> IO x ()
+    speaker inbox =
+        receive inbox
+            |> andThen
+                (\msg ->
+                    case msg of
+                        Say str ->
+                            print str
+
+                        Yell ->
+                            print (String.toUpper str)
+                )
+            |> andThen (\_ -> speaker inbox)
 
 
 ## Convenient Stuff
 
-@docs sendTo, call, spawnLink
+@docs addressOf, createInbox
+
+@docs sendTo, call, deferTo
+
+
+## Spawn variations
+
+@docs spawnWorker
+
+
+### Finite State Machine
+
 @docs StateMachine, spawnStateMachine
 
 -}
@@ -73,7 +143,7 @@ The actor model is characterized by inherent concurrency of computation within a
 import Basics exposing (..)
 import Elm.Kernel.IO
 import Platform
-import Result exposing (Result)
+import Result exposing (Result(..))
 import String exposing (String)
 
 
@@ -82,14 +152,12 @@ type IO err ok
     = IO
 
 
-{-| An inbox where you can retrieve messages from.
--}
+{-| -}
 type Inbox msg
     = Inbox
 
 
-{-| An Address of an `Inbox` that you can send messages to.
--}
+{-| -}
 type Address msg
     = Address
 
@@ -107,15 +175,16 @@ fail =
 
 
 {-| -}
-andThen : (a -> IO x b) -> IO x a -> IO x b
-andThen =
+map : (a -> b) -> IO x a -> IO x b
+map =
+    -- This is not a misstake, it explits how Promis.then works.
     Elm.Kernel.IO.andThen
 
 
 {-| -}
-and : IO x b -> IO x a -> IO x b
-and b a =
-    andThen (\_ -> b) a
+andThen : (a -> IO x b) -> IO x a -> IO x b
+andThen =
+    Elm.Kernel.IO.andThen
 
 
 {-| -}
@@ -137,6 +206,12 @@ sleep =
 
 
 {-| -}
+exit : Int -> IO x ()
+exit =
+    Elm.Kernel.IO.exit
+
+
+{-| -}
 program : (() -> IO String ()) -> Platform.Program () () ()
 program =
     Elm.Kernel.IO.program
@@ -147,28 +222,27 @@ program =
 
 
 {-| -}
-spawn : (Inbox msg -> IO err ()) -> IO x (Address msg)
-spawn =
-    Elm.Kernel.IO.spawn
+type alias Process msg err ok =
+    Inbox msg -> IO err ok
 
 
 {-| -}
-spawnLink :
-    (Inbox msg -> IO err ok)
+spawn :
+    Process msg err ok
     -> Address (Result err ok)
     -> IO x (Address msg)
-spawnLink =
+spawn =
     Elm.Kernel.IO.spawnLink
 
 
 {-| -}
-receive : Inbox msg -> IO err msg
+receive : Inbox msg -> IO x msg
 receive =
     Elm.Kernel.IO.recv
 
 
 {-| -}
-send : msg -> Address msg -> IO err ()
+send : msg -> Address msg -> IO x ()
 send =
     Elm.Kernel.IO.send
 
@@ -179,20 +253,54 @@ createInbox =
     Elm.Kernel.IO.createInbox
 
 
-{-| -}
-addressOf : (v -> msg) -> Inbox msg -> Address v
+{-| Get the address corresponding to an inbox.
+
+    type MyMsg
+        = GotValue Int
+
+    inbox : Inbox MyMsg
+
+Now I can do:
+
+    returnAddress : Address MyMSg
+    returnAddress =
+        addressOf identity inbox
+
+Or even better:
+
+    returnAddress : Address Int
+    returnAddress =
+        addressOf GotValue inbox
+
+-}
+addressOf : (value -> msg) -> Inbox msg -> Address value
 addressOf =
     Elm.Kernel.IO.addressOf
 
 
-{-| -}
+{-| Pipe-friendly version of send
+
+    message
+        |> sendTo address
+
+-}
 sendTo : Address msg -> msg -> IO err ()
 sendTo addr msg =
     send msg addr
 
 
-{-| -}
-call : (Address v -> msg) -> Address msg -> IO err v
+{-| Send a message and then wait for the reply.
+
+    type Msg
+        = SendValueTo (Address Int)
+        | Increment
+
+    getValue : Address Msg -> IO x Int
+    getValue address =
+        call SendValueTo address
+
+-}
+call : (Address value -> msg) -> Address msg -> IO x value
 call toMsg addr =
     createInbox ()
         |> andThen
@@ -204,37 +312,112 @@ call toMsg addr =
             )
 
 
+{-| Defer an I/O action and send the result to an address.
+
+    type Msg
+        = GotResult (Result String Int)
+
+    doSomethingSlow 1.0
+        |> deferTo (addressOf GotResult inbox)
+        |> continueDoingStuff
+
+
+    doSomethingSlow : Float -> IO String Int
+
+-}
+deferTo : Address (Result err ok) -> IO err ok -> IO x ()
+deferTo addr io =
+    spawn (\_ -> io) addr
+        |> map (\_ -> ())
+
+
+
+-- ADRESSES
+
+
+{-| Exits the program if an `Err` is received. The String will
+be printed to `STDERR`.
+-}
+exitOnError : Address (Result String a)
+exitOnError =
+    Elm.Kernel.IO.exitOnError
+
+
+{-| Print errors to `STDERR`.
+-}
+logOnError : Address (Result String a)
+logOnError =
+    Elm.Kernel.IO.logOnError
+
+
 
 -- STATE MACHINE
 
 
-{-| -}
-type alias StateMachine args model msg =
-    { init : args -> ( model, IO String () )
-    , update : msg -> model -> ( model, IO String () )
+{-| Implement actors with both state and IO. Looks familiar?
+
+    type Msg
+        = Increment
+        | SendValueTo (Address Int)
+
+    type alias Model =
+        Int
+
+    counter : StateMachine Int Model Msg x
+    counter =
+        { init = init
+        , update = update
+        }
+
+
+    init : Int -> ( Model, IO x () )
+    init arg =
+        ( arg, return () )
+
+
+    update : Msg -> Model -> ( Model, IO x () )
+    update msg model =
+        case msg of
+            Increment ->
+                ( model + 1
+                , return ()
+                )
+
+            SendValueTo replyTo
+                ( model
+                , send model replyTo
+                )
+
+-}
+type alias StateMachine args model msg err =
+    { init : args -> ( model, IO err () )
+    , update : msg -> model -> ( model, IO err () )
     }
 
 
 {-| -}
 spawnStateMachine :
-    StateMachine args model msg
+    StateMachine args model msg err
     -> args
-    -> IO String (Address msg)
-spawnStateMachine sm args =
+    -> Address (Result err ())
+    -> IO x (Address msg)
+spawnStateMachine sm args onExit =
     let
         ( model, io ) =
             sm.init args
     in
-    andThen (\_ -> spawn (makeActor sm.update model)) io
+    io
+        |> recover (\err -> send (Err err) onExit)
+        |> andThen (\_ -> spawn (makeFSM sm.update model) onExit)
 
 
 {-| -}
-makeActor :
-    (msg -> model -> ( model, IO String () ))
+makeFSM :
+    (msg -> model -> ( model, IO err () ))
     -> model
     -> Inbox msg
-    -> IO String ()
-makeActor fn state inbox =
+    -> IO err ()
+makeFSM fn state inbox =
     receive inbox
         |> andThen
             (\msg ->
@@ -242,5 +425,48 @@ makeActor fn state inbox =
                     ( state2, io ) =
                         fn msg state
                 in
-                andThen (\_ -> makeActor fn state2 inbox) io
+                andThen (\_ -> makeFSM fn state2 inbox) io
             )
+
+
+{-| A worker is an actor that performs I/O but does not need any state.
+
+Instead of doing this:
+
+    speaker : Inbox Msg -> IO x ()
+    speaker inbox =
+        receive inbox
+            |> andThen
+                (\msg ->
+                    case msg of
+                        Say str ->
+                            print str
+
+                        Yell ->
+                            print (String.toUpper str)
+                )
+            |> andThen (\_ -> speaker inbox)
+
+you can just impelent the inner function:
+
+    speaker : Msg -> IO x ()
+    speaker msg =
+        case msg of
+            Say str ->
+                print str
+
+            Yell ->
+                print (String.toUpper str)
+
+-}
+spawnWorker : (msg -> IO err ()) -> Address (Result err ()) -> IO x (Address msg)
+spawnWorker fn onExit =
+    spawn (makeWorker fn) onExit
+
+
+{-| -}
+makeWorker : (msg -> IO err ()) -> Inbox msg -> IO err ()
+makeWorker fn inbox =
+    receive inbox
+        |> andThen fn
+        |> andThen (\_ -> makeWorker fn inbox)

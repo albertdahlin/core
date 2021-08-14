@@ -1,5 +1,5 @@
 /*
-import Result exposing (Ok, Err)
+import Result exposing (Ok, Err, isOk, isErr)
 
 */
 
@@ -9,7 +9,7 @@ var resolvers = new WeakMap();
 
 function _IO_return(v) { return Promise.resolve(v); }
 function _IO_fail(e) { return Promise.reject(e); }
-function _IO_print(m) { console.log(m); return null; }
+function _IO_print(m) { console.log(m); return _IO_return(0); }
 
 function _IO_sleep(t) {
     return new Promise(resolve => setTimeout(resolve, t));
@@ -25,6 +25,10 @@ var _IO_recover = F2(function(fn, io)
     return io.catch(fn);
 });
 
+function _IO_exit(status) {
+    process.exit(status);
+}
+
 var _IO_spawn = spawnLink;
 var _IO_spawnLink = F2(spawnLink);
 
@@ -37,13 +41,12 @@ function spawnLink(fn, linkTo) {
     var wrapIo = function() {
         var io = fn(inbox);
 
-        if (linkTo) {
-            io = io.then(ok => A2(_IO_send, $elm$core$Result$Ok(ok), linkTo))
-              .catch(err => A2(_IO_send, $elm$core$Result$Err(err), linkTo))
-        }
-        io.finally(x => {
-            inboxes.delete(inbox.key);
-            resolvers.delete(inbox.key);
+        io = io
+            .then(ok => A2(_IO_send, __Result_Ok(ok), linkTo))
+            .catch(err => A2(_IO_send, __Result_Err(err), linkTo))
+            .finally(x => {
+                inboxes.delete(inbox.key);
+                resolvers.delete(inbox.key);
         });
 
         return io;
@@ -65,6 +68,10 @@ function _IO_recv(inbox) {
 }
 
 var _IO_send = F2(function(msg, address) {
+    if (address.handler) {
+        return address.handler(msg);
+    }
+
     var resolver = resolvers.get(address.key);
     var tagger  = address.tagger || function(x) { return x };
     var resolve = resolver && resolver.shift();
@@ -100,7 +107,25 @@ var _IO_addressOf = F2(function(tagger, inbox) {
 });
 
 
+var _IO_exitOnError = {
+    handler: function(msg) {
+        if (!__Result_isOk(msg)) {
+            console.error(msg.a);
+            _IO_exit(-1);
+        }
+    }
+};
+var _IO_logOnError = {
+    handler: function(msg) {
+        if (!__Result_isOk(msg)) {
+            console.error(msg.a);
+        }
+        return _IO_return(0);
+    }
+};
+
 var _IO_program = F4(function(impl, flagDecoder, debugMetadata, args) {
+
     impl(process)
         .catch(err => console.error('ERROR', err));
 });
