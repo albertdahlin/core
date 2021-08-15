@@ -1,6 +1,6 @@
 /*
 import Result exposing (Ok, Err, isOk, isErr)
-import IO exposing (succeed, andThen, deferTo, Exit)
+import IO exposing (succeed, andThen, deferTo, Future)
 
 */
 
@@ -26,9 +26,10 @@ function _IO_exit(status) {
     process.exit(status);
 }
 
-var _IO_spawn = F2(spawnLink);
+var _IO_spawn = F2(IO_spawn);
 
-function spawnLink(actor, linkTo) {
+
+function IO_spawn(actor, linkTo) {
     var inbox = {
         key: {},
         id: lastKey++
@@ -37,11 +38,12 @@ function spawnLink(actor, linkTo) {
     resolvers.set(inbox.key, []);
 
     setTimeout(function() {
-        actor(inbox)(function(res) { A2(_IO_send, res, linkTo) })
+        actor(inbox)(function(res) { IO_send(res, linkTo) })
     }, 0);
 
     return __IO_succeed(inbox);
 }
+
 
 function _IO_async(io) {
     var inbox = {
@@ -51,9 +53,9 @@ function _IO_async(io) {
     inboxes.set(inbox.key, []);
     resolvers.set(inbox.key, []);
 
-    spawnLink(x => io, inbox);
+    IO_spawn(x => io, inbox);
 
-    return __IO_Exit(inbox);
+    return __IO_Future(inbox);
 }
 
 
@@ -71,7 +73,9 @@ function _IO_recv(inbox) {
     }
 }
 
-var _IO_send = F2(function(msg, address) {
+
+var _IO_send = F2(IO_send);
+function IO_send(msg, address) {
     if (address.handler) {
         return address.handler(msg);
     }
@@ -91,7 +95,8 @@ var _IO_send = F2(function(msg, address) {
     }
 
     return __IO_succeed(0);
-});
+};
+
 
 function _IO_createInbox() {
     var inbox = {
@@ -103,6 +108,7 @@ function _IO_createInbox() {
 
     return __IO_succeed(inbox);
 }
+
 
 var _IO_addressOf = F2(function(tagger, inbox) {
     return {
@@ -131,7 +137,7 @@ var _IO_logOnError = {
 };
 
 var _IO_program = F4(function(impl, flagDecoder, debugMetadata, args) {
-    spawnLink(impl, _IO_exitOnError);
+    IO_spawn(impl, _IO_exitOnError);
 });
 
 function _Platform_export(p) {

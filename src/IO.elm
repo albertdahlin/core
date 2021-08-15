@@ -6,7 +6,7 @@ module IO exposing
     , batch, sequence, concurrent
     , (|.), (|=)
     , print, sleep, exit
-    , Exit, async, await, spawnAsync
+    , Future, async, await, spawnAsync
     , Address, send
     , Inbox, receive
     , Process
@@ -56,7 +56,7 @@ with the [Promise](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Refer
 
 ## Async API
 
-@docs Exit, async, await, spawnAsync
+@docs Future, async, await, spawnAsync
 
 
 # Concurrent I/O
@@ -292,15 +292,23 @@ send =
     Elm.Kernel.IO.send
 
 
-{-| -}
-type Exit err ok
-    = Exit (Inbox (Result err ok))
+{-| Something that hasen't happened yet.
+-}
+type Future err ok
+    = Future (Inbox (Result err ok))
 
 
 {-| -}
-async : IO err ok -> Exit err ok
+async : IO err ok -> Future err ok
 async =
     Elm.Kernel.IO.async
+
+
+{-| -}
+when : Future err ok -> Address (Result err ok) -> IO x ()
+when future address =
+    spawn (\_ -> await future) address
+        |> map (\_ -> ())
 
 
 {-| -}
@@ -499,8 +507,8 @@ sequence =
 
 
 {-| -}
-await : Exit err ok -> IO err ok
-await (Exit inbox) =
+await : Future err ok -> IO err ok
+await (Future inbox) =
     receive inbox
         |> andThen fromResult
 
@@ -523,13 +531,13 @@ await (Exit inbox) =
 -}
 spawnAsync :
     Process msg err ok
-    -> IO x ( Address msg, Exit err ok )
+    -> IO x ( Address msg, Future err ok )
 spawnAsync actor =
     createInbox ()
         |> andThen
             (\inbox ->
                 spawn actor (addressOf identity inbox)
-                    |> map (\addr -> ( addr, Exit inbox ))
+                    |> map (\addr -> ( addr, Future inbox ))
             )
 
 
