@@ -1,6 +1,6 @@
 /*
 import Result exposing (Ok, Err, isOk, isErr)
-import IO exposing (succeed, andThen, deferTo, Future)
+import IO exposing (succeed, andThen, deferTo, Future, Inbox, Address, spawn)
 
 */
 
@@ -28,36 +28,13 @@ function _IO_exit(status) {
 
 var _IO_spawn = F2(IO_spawn);
 
-
-function IO_spawn(actor, linkTo) {
-    var inbox = {
-        key: {},
-        id: lastKey++
-    };
-    inboxes.set(inbox.key, []);
-    resolvers.set(inbox.key, []);
-
+function IO_spawn(io, onExit) {
     setTimeout(function() {
-        actor(inbox)(function(res) { IO_send(res, linkTo) })
+        io(function(res) { IO_send(res, onExit) })
     }, 0);
 
-    return __IO_succeed(inbox);
+    return __IO_succeed(0);
 }
-
-
-function _IO_async(io) {
-    var inbox = {
-        key: {},
-        id: lastKey++
-    };
-    inboxes.set(inbox.key, []);
-    resolvers.set(inbox.key, []);
-
-    IO_spawn(x => io, inbox);
-
-    return __IO_Future(inbox);
-}
-
 
 
 function _IO_recv(inbox) {
@@ -99,6 +76,9 @@ function IO_send(msg, address) {
 
 
 function _IO_createInbox() {
+    return __IO_succeed(IO_createInbox())
+}
+function IO_createInbox() {
     var inbox = {
         key: {},
         id: lastKey++
@@ -106,16 +86,16 @@ function _IO_createInbox() {
     inboxes.set(inbox.key, []);
     resolvers.set(inbox.key, []);
 
-    return __IO_succeed(inbox);
+    return __IO_Inbox(inbox);
 }
 
 
 var _IO_addressOf = F2(function(tagger, inbox) {
-    return {
+    return __IO_Address({
         id: inbox.id,
         key: inbox.key,
         tagger: tagger
-    }
+    })
 });
 
 
@@ -137,7 +117,9 @@ var _IO_logOnError = {
 };
 
 var _IO_program = F4(function(impl, flagDecoder, debugMetadata, args) {
-    IO_spawn(impl, _IO_exitOnError);
+    var onExit = __IO_Address(_IO_exitOnError);
+    var inbox = IO_createInbox();
+    IO_spawn(impl(inbox), onExit);
 });
 
 function _Platform_export(p) {

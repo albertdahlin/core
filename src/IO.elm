@@ -208,6 +208,7 @@ that you can use when spawning processes:
 -}
 
 import Basics exposing (..)
+import Debug
 import Dict exposing (Dict)
 import Elm.Kernel.IO
 import Internal.Cont as C
@@ -230,12 +231,12 @@ type alias IO err ok =
 
 {-| -}
 type Inbox msg
-    = Inbox
+    = Inbox {}
 
 
 {-| -}
 type Address msg
-    = Address
+    = Address {}
 
 
 {-| -}
@@ -271,48 +272,28 @@ program =
     Elm.Kernel.IO.program
 
 
-{-| -}
-spawn :
-    Process msg err ok
-    -> Address (Result err ok)
-    -> IO x (Address msg)
-spawn =
-    Elm.Kernel.IO.spawn
+internalSpawn :
+    IO err ok
+    -> Inbox (Result err ok)
+    -> IO x ()
+internalSpawn io (Inbox ib) =
+    Elm.Kernel.IO.spawn io ib
 
 
 {-| -}
 receive : Inbox msg -> IO x msg
-receive =
-    Elm.Kernel.IO.recv
+receive (Inbox ib) =
+    Elm.Kernel.IO.recv ib
 
 
 {-| -}
 send : msg -> Address msg -> IO x ()
-send =
-    Elm.Kernel.IO.send
-
-
-{-| Something that hasen't happened yet.
--}
-type Future err ok
-    = Future (Inbox (Result err ok))
+send msg (Address addr) =
+    Elm.Kernel.IO.send msg addr
 
 
 {-| -}
-async : IO err ok -> Future err ok
-async =
-    Elm.Kernel.IO.async
-
-
-{-| -}
-when : Future err ok -> Address (Result err ok) -> IO x ()
-when future address =
-    spawn (\_ -> await future) address
-        |> map (\_ -> ())
-
-
-{-| -}
-createInbox : () -> IO err (Inbox msg)
+createInbox : () -> IO x (Inbox msg)
 createInbox =
     Elm.Kernel.IO.createInbox
 
@@ -338,8 +319,8 @@ Or even better:
 
 -}
 addressOf : (value -> msg) -> Inbox msg -> Address value
-addressOf =
-    Elm.Kernel.IO.addressOf
+addressOf tagger (Inbox ib) =
+    Elm.Kernel.IO.addressOf tagger ib
 
 
 {-| Exits the program if an `Err` is received. The String will
@@ -358,7 +339,16 @@ logOnError =
 
 
 
+--
 -- PURE STUFF
+--
+
+
+{-| -}
+when : Future err ok -> Address (Result err ok) -> IO x ()
+when future address =
+    spawn (\_ -> await future) address
+        |> map (\_ -> ())
 
 
 {-| -}
@@ -507,6 +497,37 @@ sequence =
 
 
 {-| -}
+spawn :
+    Process msg err ok
+    -> Address (Result err ok)
+    -> IO x (Address msg)
+spawn process (Address onExit) =
+    createInbox ()
+        |> andThen
+            (\(Inbox onMsg) ->
+                internalSpawn (process (Inbox onMsg)) (Inbox onExit)
+                    |> map (\_ -> Address onMsg)
+            )
+
+
+{-| Something that hasen't happened yet.
+-}
+type Future err ok
+    = Future (Inbox (Result err ok))
+
+
+{-| -}
+async : IO err ok -> IO x (Future err ok)
+async io =
+    createInbox ()
+        |> andThen
+            (\onExit ->
+                internalSpawn io onExit
+                    |> map (\_ -> Future onExit)
+            )
+
+
+{-| -}
 await : Future err ok -> IO err ok
 await (Future inbox) =
     receive inbox
@@ -535,9 +556,13 @@ spawnAsync :
 spawnAsync actor =
     createInbox ()
         |> andThen
-            (\inbox ->
-                spawn actor (addressOf identity inbox)
-                    |> map (\addr -> ( addr, Future inbox ))
+            (\(Inbox onMsg) ->
+                createInbox ()
+                    |> andThen
+                        (\onExit ->
+                            internalSpawn (actor (Inbox onMsg)) onExit
+                                |> map (\_ -> ( Address onMsg, Future onExit ))
+                        )
             )
 
 
@@ -545,7 +570,7 @@ spawnAsync actor =
 -}
 concurrent : List (IO err ok) -> IO err (List ok)
 concurrent =
-    List.map (async >> await)
+    List.map (async >> andThen await)
         >> sequence
 
 
