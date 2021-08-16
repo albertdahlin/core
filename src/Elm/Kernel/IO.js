@@ -5,19 +5,19 @@ import IO exposing (succeed, andThen, deferTo, Future, Inbox, Address, spawn)
 */
 
 var inboxes = new WeakMap();
-var resolvers = new WeakMap();
+var waitingForMsg = new WeakMap();
 var lastKey = 0
 
 function _IO_print(m) {
-    return function(cont) {
+    return function(continuation) {
         console.log(m);
-        cont(__Result_Ok(0));
+        continuation(__Result_Ok(0));
     }
  }
 
 function _IO_sleep(t) {
-    return function(cont) {
-        setTimeout(cont, t, __Result_Ok(0));
+    return function(continuation) {
+        setTimeout(continuation, t, __Result_Ok(0));
     }
 }
 
@@ -27,7 +27,6 @@ function _IO_exit(status) {
 }
 
 var _IO_spawn = F2(IO_spawn);
-
 function IO_spawn(io, onExit) {
     setTimeout(function() {
         io(function(res) { IO_send(res, onExit) })
@@ -37,15 +36,16 @@ function IO_spawn(io, onExit) {
 }
 
 
-function _IO_recv(inbox) {
-    return function(cont) {
-        var msg = inboxes.get(inbox.key).shift();
+function _IO_recv(address) {
+    return function(continuation) {
+        var inbox = inboxes.get(address.key);
+        var msg = inbox && inbox.shift();
 
         if (msg) {
-            cont(__Result_Ok(msg));
+            continuation(__Result_Ok(msg));
         } else {
-            var r = resolvers.get(inbox.key)
-            r.push(cont);
+            var waiting = waitingForMsg.get(address.key)
+            waiting.push(continuation);
         }
     }
 }
@@ -57,7 +57,7 @@ function IO_send(msg, address) {
         return address.handler(msg);
     }
 
-    var resolver = resolvers.get(address.key);
+    var resolver = waitingForMsg.get(address.key);
     var tagger  = address.tagger || function(x) { return x };
     var resolve = resolver && resolver.shift();
 
@@ -79,14 +79,14 @@ function _IO_createInbox() {
     return __IO_succeed(IO_createInbox())
 }
 function IO_createInbox() {
-    var inbox = {
+    var address = {
         key: {},
         id: lastKey++
     };
-    inboxes.set(inbox.key, []);
-    resolvers.set(inbox.key, []);
+    inboxes.set(address.key, []);
+    waitingForMsg.set(address.key, []);
 
-    return __IO_Inbox(inbox);
+    return __IO_Inbox(address);
 }
 
 
