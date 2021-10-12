@@ -12,8 +12,7 @@ module IO exposing
     , Process
     , spawn
     , program
-    , exitOnError, logOnError
-    , addressOf, createInbox
+    , addressOf, newInbox
     , sendTo, call, deferTo
     , spawnWorker
     , StateMachine, spawnStateMachine
@@ -110,7 +109,7 @@ A process is simply a function that takes an _Inbox_ as argument and returns I/O
 
 @docs Process
 
-Let's create a simple process
+Let's create a simple process that accepts a String and prints it to the console:
 
     logger : Inbox String -> IO x ()
     logger inbox =
@@ -190,8 +189,7 @@ What follows is just convenience.
 To make things simpler, this module provies two standard addresses
 that you can use when spawning processes:
 
-@docs exitOnError, logOnError
-@docs addressOf, createInbox
+@docs addressOf, newInbox
 
 @docs sendTo, call, deferTo
 
@@ -226,7 +224,11 @@ infix left  0 (|=) = keeper
 
 {-| -}
 type alias IO err ok =
-    Cont () err ok
+    Cont Native err ok
+
+
+type Native
+    = Native
 
 
 {-| -}
@@ -249,6 +251,42 @@ type alias Process msg err ok =
 
 
 {-| -}
+program : (Inbox msg -> IO String ()) -> Platform.Program () () msg
+program =
+    Elm.Kernel.IO.program
+
+
+internalSpawn :
+    IO err ok
+    -> Inbox (Result err ok)
+    -> IO x ()
+internalSpawn io (Inbox ib) =
+    Elm.Kernel.IO.spawn io ib
+
+
+{-| -}
+send : msg -> Address msg -> IO x ()
+send msg (Address addr) =
+    Elm.Kernel.IO.send msg addr
+
+
+{-| -}
+receive : Inbox msg -> IO x msg
+receive (Inbox ib) =
+    Elm.Kernel.IO.recv ib
+
+
+{-| -}
+newInbox : IO x (Inbox msg)
+newInbox =
+    Elm.Kernel.IO.createInbox ()
+
+
+
+-- NATIVE IO
+
+
+{-| -}
 print : String -> IO x ()
 print =
     Elm.Kernel.IO.print
@@ -264,38 +302,6 @@ sleep =
 exit : Int -> IO x ()
 exit =
     Elm.Kernel.IO.exit
-
-
-{-| -}
-program : (Inbox msg -> IO String ()) -> Platform.Program () () msg
-program =
-    Elm.Kernel.IO.program
-
-
-internalSpawn :
-    IO err ok
-    -> Inbox (Result err ok)
-    -> IO x ()
-internalSpawn io (Inbox ib) =
-    Elm.Kernel.IO.spawn io ib
-
-
-{-| -}
-receive : Inbox msg -> IO x msg
-receive (Inbox ib) =
-    Elm.Kernel.IO.recv ib
-
-
-{-| -}
-send : msg -> Address msg -> IO x ()
-send msg (Address addr) =
-    Elm.Kernel.IO.send msg addr
-
-
-{-| -}
-createInbox : () -> IO x (Inbox msg)
-createInbox =
-    Elm.Kernel.IO.createInbox
 
 
 {-| Get the address corresponding to an inbox.
@@ -321,21 +327,6 @@ Or even better:
 addressOf : (value -> msg) -> Inbox msg -> Address value
 addressOf tagger (Inbox ib) =
     Elm.Kernel.IO.addressOf tagger ib
-
-
-{-| Exits the program if an `Err` is received. The String will
-be printed to `STDERR`.
--}
-exitOnError : Address (Result String a)
-exitOnError =
-    Elm.Kernel.IO.exitOnError
-
-
-{-| Print errors to `STDERR`.
--}
-logOnError : Address (Result String a)
-logOnError =
-    Elm.Kernel.IO.logOnError
 
 
 
@@ -371,8 +362,8 @@ map =
 
 {-| -}
 andThen : (a -> IO x b) -> IO x a -> IO x b
-andThen =
-    Cont.andThen
+andThen c a =
+    Cont.andThen c a
 
 
 {-| -}
@@ -502,7 +493,7 @@ spawn :
     -> Address (Result err ok)
     -> IO x (Address msg)
 spawn process (Address onExit) =
-    createInbox ()
+    newInbox
         |> andThen
             (\(Inbox onMsg) ->
                 internalSpawn (process (Inbox onMsg)) (Inbox onExit)
@@ -519,7 +510,7 @@ type Future err ok
 {-| -}
 async : IO err ok -> IO x (Future err ok)
 async io =
-    createInbox ()
+    newInbox
         |> andThen
             (\onExit ->
                 internalSpawn io onExit
@@ -554,10 +545,10 @@ spawnAsync :
     Process msg err ok
     -> IO x ( Address msg, Future err ok )
 spawnAsync actor =
-    createInbox ()
+    newInbox
         |> andThen
             (\(Inbox onMsg) ->
-                createInbox ()
+                newInbox
                     |> andThen
                         (\onExit ->
                             internalSpawn (actor (Inbox onMsg)) onExit
@@ -587,7 +578,7 @@ concurrent =
 -}
 call : (Address value -> msg) -> Address msg -> IO x value
 call toMsg addr =
-    createInbox ()
+    newInbox
         |> andThen
             (\inbox ->
                 addressOf identity inbox

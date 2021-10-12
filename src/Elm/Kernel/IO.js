@@ -1,6 +1,7 @@
 /*
 import Result exposing (Ok, Err, isOk, isErr)
 import IO exposing (succeed, andThen, deferTo, Future, Inbox, Address, spawn)
+import Elm.Kernel.Utils exposing (Tuple0)
 
 */
 
@@ -11,13 +12,13 @@ var lastKey = 0
 function _IO_print(m) {
     return function(continuation) {
         console.log(m);
-        continuation(__Result_Ok(0));
+        continuation(__Result_Ok(__Utils_Tuple0));
     }
  }
 
 function _IO_sleep(t) {
     return function(continuation) {
-        setTimeout(continuation, t, __Result_Ok(0));
+        setTimeout(continuation, t, __Result_Ok(__Utils_Tuple0));
     }
 }
 
@@ -32,7 +33,7 @@ function IO_spawn(io, onExit) {
         io(function(res) { IO_send(res, onExit) })
     }, 0);
 
-    return __IO_succeed(0);
+    return __IO_succeed(__Utils_Tuple0);
 }
 
 
@@ -57,12 +58,12 @@ function IO_send(msg, address) {
         return address.handler(msg);
     }
 
-    var resolver = waitingForMsg.get(address.key);
+    var waiting = waitingForMsg.get(address.key);
     var tagger  = address.tagger || function(x) { return x };
-    var resolve = resolver && resolver.shift();
+    var continuation = waiting && waiting.shift();
 
-    if (resolve) {
-        resolve(__Result_Ok(tagger(msg)));
+    if (continuation) {
+        continuation(__Result_Ok(tagger(msg)));
     } else {
         var inbox = inboxes.get(address.key);
 
@@ -71,7 +72,7 @@ function IO_send(msg, address) {
         }
     }
 
-    return __IO_succeed(0);
+    return __IO_succeed(__Utils_Tuple0);
 };
 
 
@@ -99,7 +100,7 @@ var _IO_addressOf = F2(function(tagger, inbox) {
 });
 
 
-var _IO_exitOnError = {
+var IO_exitOnError = {
     handler: function(msg) {
         if (!__Result_isOk(msg)) {
             console.error('error', msg.a);
@@ -107,17 +108,9 @@ var _IO_exitOnError = {
         }
     }
 };
-var _IO_logOnError = {
-    handler: function(msg) {
-        if (!__Result_isOk(msg)) {
-            console.error(msg.a);
-        }
-        return __IO_succeed(0);
-    }
-};
 
 var _IO_program = F4(function(impl, flagDecoder, debugMetadata, args) {
-    var onExit = __IO_Address(_IO_exitOnError);
+    var onExit = __IO_Address(IO_exitOnError);
     var inbox = IO_createInbox();
     IO_spawn(impl(inbox), onExit);
 });
